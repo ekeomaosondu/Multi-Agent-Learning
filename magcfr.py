@@ -1,5 +1,6 @@
 from email import policy
 from logging import info
+from platform import node
 
 
 class Infoset:
@@ -172,7 +173,9 @@ class Game:
                     if infoset.name not in response or value > response[infoset.name][1]:
                         response[infoset.name] = (action, value)
 
-        return response
+        reach = self.reach_probs(player_i, strategy)
+
+        return {key: {value[0]: 1} for key, value in response.items()}
 
     def tree_values(self, player_i, opp_player, strategy=None):
         response = {}
@@ -206,22 +209,22 @@ class Game:
                     child_infoset = self.hist_to_infoset[child]
 
                     if not child_infoset.terminal and child_infoset.player == player_i:
-                            if child_infoset.name not in infoset_ev_table:
-                                
-                                optimal_value = float('-inf')
-                                optimal_move = None
-                                for child_action in child_infoset.actions:
-                                    value = None
-                                    if policy_ev_table[child_infoset.name][child_action][1] != 0:
-                                        value = policy_ev_table[child_infoset.name][child_action][0] / policy_ev_table[child_infoset.name][child_action][1]
-                                    if value > optimal_value:
-                                        optimal_value = value
-                                        optimal_move = child_action
-                                
-                                infoset_ev_table[child_infoset.name] = optimal_value
-                                response[child_infoset.name] = optimal_move, optimal_value
+                        if child_infoset.name not in infoset_ev_table:
+                            
+                            optimal_value = float('-inf')
+                            optimal_move = None
+                            for child_action in child_infoset.actions:
+                                value = None
+                                if policy_ev_table[child_infoset.name][child_action][1] != 0:
+                                    value = policy_ev_table[child_infoset.name][child_action][0] / policy_ev_table[child_infoset.name][child_action][1]
+                                if value > optimal_value:
+                                    optimal_value = value
+                                    optimal_move = child_action
+                            
+                            infoset_ev_table[child_infoset.name] = optimal_value
+                            response[child_infoset.name] = optimal_move, optimal_value
 
-                            node_ev_table[child] = node_ev_table[self.next_node(child, child_infoset.player, response[child_infoset.name][0])] 
+                        node_ev_table[child] = node_ev_table[self.next_node(child, child_infoset.player, response[child_infoset.name][0])] 
 
                     if infoset.player == opp_player:
                         if strategy is not None:
@@ -245,6 +248,32 @@ class Game:
                     node_ev_table[node] = node_ev
         return policy_ev_table
 
+    def calc_ev(self, strat1 = None, strat2 = None, node = '/'):
+        ev = 0
+        infoset = self.hist_to_infoset[node]
+        if not infoset.terminal:
+            for action in infoset.actions:
+                child = self.next_node(node, infoset.player, action)
+                child_infoset = self.hist_to_infoset[child]
+                if infoset.player == 'chance':
+                    ev += infoset.chance_probs[action] * self.calc_ev(strat1, strat2, child)
+                elif infoset.player == '1':
+                    if strat1 is not None:
+                        if action in strat1[infoset.name]:
+                            ev += strat1[infoset.name][action] * self.calc_ev(strat1, strat2, child)
+                    else:
+                        ev += 1/len(infoset.actions) * self.calc_ev(strat1, strat2, child)
+                else:
+                    if strat2 is not None:
+                        if action in strat2[infoset.name]:
+                            ev += strat2[infoset.name][action] * self.calc_ev(strat1, strat2, child)
+                    else:
+                        ev += 1/len(infoset.actions) * self.calc_ev(strat1, strat2, child)
+        else:
+            ev = infoset.payoffs['1']
+
+        return ev
+
     def cfr(game):
         def next_strategy():
             pass
@@ -260,11 +289,20 @@ kuhn = Game.read_efg(kuhn)
 leduc = Game.read_efg(leduc)
 
 uniform_strategy = {
-    '/P1:?/': {'r':1/3, 'p':1/3, 's':1/3},
+    '/P1:?/': {'r':1/2, 'p':1/4, 's':1/4},
 }
 
-game = rps
 
-for key, value in game.best_response('2').items(): #infoset EV
-    print(key, value)
-print()
+rps_best_response = rps.best_response('1')
+kuhn_best_response = kuhn.best_response('1')
+leduc_best_response = leduc.best_response('1')
+
+
+# rps_utility = rps.tree_values('1', '2')[1]['/']
+# kuhn_utility = kuhn.tree_values('1', '2')[1]
+
+print("Player 1 Utility in Rock Paper Superscissors against uniform opponent:", rps.calc_ev(rps.best_response('1')))
+print("Nash equilibrium gap: ", rps.calc_ev(rps.best_response('1'), None) - rps.calc_ev(None, rps.best_response('2')))
+print("Player 1 Utility in Kuhn Poker against uniform opponent:", kuhn.calc_ev(kuhn.best_response('1'), None))
+print("Nash equilibrium gap: ", kuhn.calc_ev(kuhn.best_response('1'), None) - kuhn.calc_ev(None, kuhn.best_response('2')))
+
