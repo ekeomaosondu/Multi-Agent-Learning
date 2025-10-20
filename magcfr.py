@@ -277,11 +277,71 @@ class Game:
     def equilibrium_gap(self, strat1 = None, strat2 = None):
         return self.calc_ev(self.best_response('1', strat2), strat2) - self.calc_ev(strat1, self.best_response('2', strat1))
 
-    def cfr(game):
-        def next_strategy():
-            pass
+class CFR():
+    def __init__(self, game, player_i):
+        self.game = game
+        self.player_i = player_i
+        self.opp_player = '2' if player_i == '1' else '1'
+        self.minimizers = {} #map from info sets to reg min
+        for infoset in self.game.infosets:
+            if self.game.infosets[infoset].player == player_i:
+                self.minimizers[infoset] = RegMin(self.game.infosets[infoset].actions)
 
-        pass
+    def next_strategy(self):
+        output_strategy = {} # final output strategy in sequence form
+        reach_probs = {}
+        strats = {} # infoset to strategy
+        for infoset in self.minimizers:
+            strats[infoset] = self.minimizers[infoset].next_strategy()
+        
+        reach_probs['/'] = 1
+
+        curr = ['/']
+        next_frontier = []
+        while curr:
+            for node in curr:
+                infoset = self.game.hist_to_infoset[node]
+                if not infoset.terminal:
+                    for action in infoset.actions:
+                        child = self.game.next_node(node, infoset.player, action)
+                        child_infoset = self.game.hist_to_infoset[child]
+                        if child_infoset.name not in next_frontier:
+                            next_frontier.append(child)
+                            if infoset.player == 'chance':
+                                reach_probs[child] = reach_probs[node] * infoset.chance_probs[action]
+                            elif infoset.player != self.player_i:
+                                reach_probs[child] = reach_probs[node]
+                            else:
+                                reach_probs[child] = reach_probs[node] * strats[infoset.name][action]
+                                if infoset.name not in output_strategy:
+                                    output_strategy[infoset.name] = {}
+                                output_strategy[infoset.name][action] = reach_probs[node] * strats[infoset.name][action]
+
+            curr, next_frontier = next_frontier, []
+        return output_strategy
+            
+            
+
+class RegMin():
+    def __init__(self, actions):
+        self.cum_reg = {}
+        for action in actions:
+            self.cum_reg[action] = 0
+
+    def next_strategy(self):
+        if sum(self.cum_reg.values()) == 0:
+            return {action: 1/len(self.cum_reg) for action in self.cum_reg}
+        else:
+            return {action: value / sum(self.cum_reg.values()) for action, value in self.cum_reg.items()}
+
+    def observe_utility(self, utility):
+        maximum = max(self.cum_reg.values())
+        regret = []
+        for action in self.cum_reg:
+            regret.append(max(maximum - utility[action], 0))
+        
+        self.cum_reg = {action: value + regret[action] for action, value in self.cum_reg.items()}
+        
             
 
 rps = '/Users/ekeomaosondu/Desktop/MIT 2027/Fall 2025/Multi-Agent/efgs/rock_paper_superscissors.txt'
@@ -308,3 +368,7 @@ print("Player 1 Utility in Rock Paper Superscissors against uniform opponent:", 
 print("Nash equilibrium gap: ", rps.equilibrium_gap())
 print("Player 1 Utility in Kuhn Poker against uniform opponent:", kuhn.calc_ev(kuhn.best_response('1'), None))
 print("Nash equilibrium gap: ", kuhn.equilibrium_gap())
+
+cfr = CFR(kuhn, '1')
+print(cfr.next_strategy())
+
