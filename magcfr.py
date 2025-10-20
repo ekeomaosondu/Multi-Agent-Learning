@@ -273,6 +273,9 @@ class Game:
             ev = infoset.payoffs['1']
 
         return ev
+    
+    def equilibrium_gap(self, strat1 = None, strat2 = None):
+        return self.calc_ev(self.best_response('1', strat2), strat2) - self.calc_ev(strat1, self.best_response('2', strat1))
 
     def cfr(game):
         def next_strategy():
@@ -302,7 +305,6 @@ leduc_best_response = leduc.best_response('1')
 # kuhn_utility = kuhn.tree_values('1', '2')[1]
 
 print("Player 1 Utility in Rock Paper Superscissors against uniform opponent:", rps.calc_ev(rps.best_response('1')))
-print("Nash equilibrium gap: ", rps.calc_ev(rps.best_response('1'), None) - rps.calc_ev(None, rps.best_response('2')))
+print("Nash equilibrium gap: ", rps.equilibrium_gap())
 print("Player 1 Utility in Kuhn Poker against uniform opponent:", kuhn.calc_ev(kuhn.best_response('1'), None))
-print("Nash equilibrium gap: ", kuhn.calc_ev(kuhn.best_response('1'), None) - kuhn.calc_ev(None, kuhn.best_response('2')))
-
+print("Nash equilibrium gap: ", kuhn.equilibrium_gap())
