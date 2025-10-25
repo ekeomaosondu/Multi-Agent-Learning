@@ -1,8 +1,3 @@
-from email import policy
-from logging import info
-from platform import node
-
-
 class Infoset:
         def __init__(self,
                      name = '', 
@@ -36,6 +31,7 @@ class Infoset:
                 for action in self.actions:
                     rep +=  "\n    " + action + " : " + str(self.chance_probs[action])
             return rep + '\n'
+
 class Game:
 
     def __init__(self, players: list = [], ):
@@ -71,8 +67,7 @@ class Game:
                         payoff = payoff.split('=')
                         payoffs[payoff[0]] = int(payoff[1])
                     
-                    
-                    infoset = Infoset(history, 'terminal', [''], True, True, payoffs)
+                    infoset = Infoset(history, 'terminal', [], True, False, payoffs)
                     game.infosets[history] = infoset
                     game.hist_to_infoset[history] = infoset
                 elif 'chance' in tokens:
@@ -106,8 +101,25 @@ class Game:
                 game.infosets[history] = Infoset(history, player, actions, False, {})
                 for node in nodes_in_infoset:
                     game.hist_to_infoset[node] = game.infosets[history]
-        
+
+        game.postorder = game.node_postorder()
         return game
+
+    def trace(self, name, player):
+        infoset = self.hist_to_infoset[name]
+        colon = name.rfind(':')
+        if name == '/' or name == '':
+            return []
+        elif name[colon - 1] != player:
+            name = name[:-1]
+            last_slash = name.rfind('/')
+            return self.trace(name[:last_slash + 1], player)
+        else:
+            name = name[:-1]
+            last_slash = name.rfind('/')
+            last_action = name[:last_slash].rfind('/')
+            colon = name.rfind(':')
+            return self.trace(name[:last_slash + 1], player) + [(name[:last_slash + 1], name[colon + 1:])]
     
     def reach_probs(self, player_i, opp_strat=None):
         probs = {'/': 1}
@@ -169,7 +181,7 @@ class Game:
         for infoset in self.infosets.values():
             if infoset.player == player_i:
                 for action in infoset.actions: 
-                    value = policy_ev_table[infoset.name][action][0] / policy_ev_table[infoset.name][action][1] if policy_ev_table[infoset.name][action][1] != 0 else float('-inf')
+                    value = policy_ev_table[infoset.name][action]
                     if infoset.name not in response or value > response[infoset.name][1]:
                         response[infoset.name] = (action, value)
 
@@ -246,6 +258,14 @@ class Game:
 
                         node_ev += infoset.chance_probs[action] * node_ev_table[child]
                     node_ev_table[node] = node_ev
+
+        for infoset in policy_ev_table:
+            for action in policy_ev_table[infoset]:
+                if policy_ev_table[infoset][action][1] != 0:
+                    policy_ev_table[infoset][action] = policy_ev_table[infoset][action][0] / policy_ev_table[infoset][action][1]
+                else:
+                    policy_ev_table[infoset][action] = float('-inf')
+
         return policy_ev_table
 
     def calc_ev(self, strat1 = None, strat2 = None, node = '/'):
@@ -277,6 +297,54 @@ class Game:
     def equilibrium_gap(self, strat1 = None, strat2 = None):
         return self.calc_ev(self.best_response('1', strat2), strat2) - self.calc_ev(strat1, self.best_response('2', strat1))
 
+    def _node_values(self, player_i: str, strat1: dict | None, strat2: dict | None):
+        """Return node_ev: map node->EV for player_i under (strat1,strat2)."""
+        node_ev = {}
+        for node in self.node_postorder():
+            infoset = self.hist_to_infoset[node]
+            if infoset.terminal:
+                node_ev[node] = infoset.payoffs[player_i]
+                continue
+
+            if infoset.player == 'chance':
+                ev = 0.0
+                for a in infoset.actions:
+                    child = self.next_node(node, 'chance', a)
+                    ev += infoset.chance_probs[a] * node_ev[child]
+                node_ev[node] = ev
+            elif infoset.player == '1':
+                ev = 0.0
+                if strat1 is not None and infoset.name in strat1:
+                    pol = strat1[infoset.name]
+                    for a in infoset.actions:
+                        p = pol.get(a, 0.0)
+                        if p:
+                            child = self.next_node(node, '1', a)
+                            ev += p * node_ev[child]
+                else:
+                    # uniform if no strategy provided
+                    p = 1.0 / len(infoset.actions)
+                    for a in infoset.actions:
+                        child = self.next_node(node, '1', a)
+                        ev += p * node_ev[child]
+                node_ev[node] = ev
+            else:  # infoset.player == '2'
+                ev = 0.0
+                if strat2 is not None and infoset.name in strat2:
+                    pol = strat2[infoset.name]
+                    for a in infoset.actions:
+                        p = pol.get(a, 0.0)
+                        if p:
+                            child = self.next_node(node, '2', a)
+                            ev += p * node_ev[child]
+                else:
+                    p = 1.0 / len(infoset.actions)
+                    for a in infoset.actions:
+                        child = self.next_node(node, '2', a)
+                        ev += p * node_ev[child]
+                node_ev[node] = ev
+        return node_ev
+
 class CFR():
     def __init__(self, game, player_i):
         self.game = game
@@ -285,65 +353,106 @@ class CFR():
         self.minimizers = {} #map from info sets to reg min
         for infoset in self.game.infosets:
             if self.game.infosets[infoset].player == player_i:
-                self.minimizers[infoset] = RegMin(self.game.infosets[infoset].actions)
+                self.minimizers[infoset] = RegMin(self.game.infosets[infoset].actions, infoset)
+        self.children, self.parent = self.transition()
 
-    def next_strategy(self):
-        output_strategy = {} # final output strategy in sequence form
-        reach_probs = {}
-        strats = {} # infoset to strategy
-        for infoset in self.minimizers:
-            strats[infoset] = self.minimizers[infoset].next_strategy()
-        
-        reach_probs['/'] = 1
-
+    def transition(self):
+        parent = {'/': None}
+        children = {}
         curr = ['/']
         next_frontier = []
+
         while curr:
             for node in curr:
                 infoset = self.game.hist_to_infoset[node]
+                if infoset.name not in children:
+                    children[infoset.name] = {}
                 if not infoset.terminal:
                     for action in infoset.actions:
                         child = self.game.next_node(node, infoset.player, action)
                         child_infoset = self.game.hist_to_infoset[child]
-                        if child_infoset.name not in next_frontier:
+
+                        if child_infoset.name not in parent:
                             next_frontier.append(child)
-                            if infoset.player == 'chance':
-                                reach_probs[child] = reach_probs[node] * infoset.chance_probs[action]
-                            elif infoset.player != self.player_i:
-                                reach_probs[child] = reach_probs[node]
-                            else:
-                                reach_probs[child] = reach_probs[node] * strats[infoset.name][action]
-                                if infoset.name not in output_strategy:
-                                    output_strategy[infoset.name] = {}
-                                output_strategy[infoset.name][action] = reach_probs[node] * strats[infoset.name][action]
+                            parent[child_infoset.name] = node
+                            children[infoset.name][action] = child_infoset.name
 
-            curr, next_frontier = next_frontier, []
-        return output_strategy
-            
-            
+                else:
+                    children[infoset.name] = {None: None}
 
-class RegMin():
-    def __init__(self, actions):
-        self.cum_reg = {}
-        for action in actions:
-            self.cum_reg[action] = 0
+            curr = next_frontier
+            next_frontier = []
+
+        return children, parent
 
     def next_strategy(self):
-        if sum(self.cum_reg.values()) == 0:
-            return {action: 1/len(self.cum_reg) for action in self.cum_reg}
+        strat = {}
+        for node in self.game.node_postorder()[::-1]:
+            infoset = self.game.hist_to_infoset[node]
+
+            if infoset.name not in strat:
+                if infoset.player == self.player_i:
+                    strat[infoset.name] = {}
+                    j = self.game.infosets[infoset.name]
+                    b = self.minimizers[j.name].next_strategy()
+                    for action in j.actions:
+                        tr = self.game.trace(node, self.player_i)
+                        if len(tr) == 0:
+                            strat[infoset.name][action] = b[action]
+                        else:
+                            parent, move = tr[-1]
+                            strat[infoset.name][action] = b[action] * strat[self.game.hist_to_infoset[parent].name][move]
+
+        return strat
+
+    def observe_utility(self, gradient):
+        strat = self.next_strategy()
+        V = {}
+        for node in self.game.node_postorder():
+            infoset = self.game.hist_to_infoset[node]
+            if infoset.terminal:
+                V[infoset.name] = 0
+            if infoset.player == self.player_i:
+                local_strat = self.minimizers[infoset.name].strat
+                V[infoset.name] = 0 
+                for action in local_strat:
+                    child = self.game.next_node(node, infoset.player, action)
+                    print(child, infoset.name)
+                    child_infoset = self.game.hist_to_infoset[child]
+                    V[infoset.name] += local_strat[action] * (gradient[infoset.name][action] + V[child])
+            else:
+                V[infoset.name] = 0
+                for action in infoset.actions:
+                    child = self.game.next_node(node, infoset.player, action)
+                    child_infoset = self.game.hist_to_infoset[child]
+                    V[infoset.name] += V[child]
+
+        g = {}
+        for node in self.game.node_postorder():
+            infoset = self.game.hist_to_infoset[node]
+            if infoset.player == self.player_i:
+                for action in actions:
+                    child = self.game.next_node(node, infoset.player, action)
+                    child_infoset = self.game.hist_to_infoset[child]
+                    g[infoset.name][action] = gradient[infoset.name][action] + V[child][action]
+
+                self.minimizers[infoset.name].observe_utility(g[infoset.name]) 
+class RegMin():
+    def __init__(self, actions, infoset):
+        self.infoset = infoset #infoset name
+        self.cum_reg = {a: 0 for a in actions}
+        self.strat = self.next_strategy()
+
+    def next_strategy(self):
+        if sum(max(0, value) for value in self.cum_reg.values()) == 0:
+            self.strat = {action: 1/len(self.cum_reg) for action in self.cum_reg}
         else:
-            return {action: value / sum(self.cum_reg.values()) for action, value in self.cum_reg.items()}
+            self.strat = {action: max(value, 0) / sum(max(0, value) for value in self.cum_reg.values()) for action, value in self.cum_reg.items()}
+        return self.strat
 
     def observe_utility(self, utility):
-        maximum = max(self.cum_reg.values())
-        regret = []
-        for action in self.cum_reg:
-            regret.append(max(maximum - utility[action], 0))
+        self.regret = {action: max(regret + utility[action] - (utility[action] * self.strat[action]), 0) for action, regret in self.regret.items()}
         
-        self.cum_reg = {action: value + regret[action] for action, value in self.cum_reg.items()}
-        
-            
-
 rps = '/Users/ekeomaosondu/Desktop/MIT 2027/Fall 2025/Multi-Agent/efgs/rock_paper_superscissors.txt'
 kuhn = '/Users/ekeomaosondu/Desktop/MIT 2027/Fall 2025/Multi-Agent/efgs/kuhn.txt'
 leduc = '/Users/ekeomaosondu/Desktop/MIT 2027/Fall 2025/Multi-Agent/efgs/leduc2.txt'
@@ -351,24 +460,7 @@ rps = Game.read_efg(rps)
 kuhn = Game.read_efg(kuhn)
 leduc = Game.read_efg(leduc)
 
-uniform_strategy = {
-    '/P1:?/': {'r':1/2, 'p':1/4, 's':1/4},
-}
 
 
-rps_best_response = rps.best_response('1')
-kuhn_best_response = kuhn.best_response('1')
-leduc_best_response = leduc.best_response('1')
 
-
-# rps_utility = rps.tree_values('1', '2')[1]['/']
-# kuhn_utility = kuhn.tree_values('1', '2')[1]
-
-print("Player 1 Utility in Rock Paper Superscissors against uniform opponent:", rps.calc_ev(rps.best_response('1')))
-print("Nash equilibrium gap: ", rps.equilibrium_gap())
-print("Player 1 Utility in Kuhn Poker against uniform opponent:", kuhn.calc_ev(kuhn.best_response('1'), None))
-print("Nash equilibrium gap: ", kuhn.equilibrium_gap())
-
-cfr = CFR(kuhn, '1')
-print(cfr.next_strategy())
 
